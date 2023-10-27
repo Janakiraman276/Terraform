@@ -1,0 +1,222 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# Configure the AWS Provider
+provider "aws" {
+  region = "ap-south-1"
+}
+
+# Create a VPC
+resource "aws_vpc" "myvpc" {
+  cidr_block       = "10.0.0.0/16"
+  instance_tenancy = "default"
+
+  tags = {
+    Name = "MY-VPC"
+  }
+}
+
+# Create a Subnets
+# public subnet
+
+resource "aws_subnet" "public" {
+  vpc_id     = aws_vpc.myvpc.id
+  cidr_block = "10.0.1.0/24"
+  availability_zone = "ap-south-1a" # Change the AZ as needed
+
+  tags = {
+    Name = "MY-PUB-SN"
+  }
+}
+
+# Private subnet
+resource "aws_subnet" "private" {
+  vpc_id     = aws_vpc.myvpc.id
+  cidr_block = "10.0.2.0/24"
+  availability_zone = "ap-south-1b" # Change the AZ as needed
+
+  tags = {
+    Name = "MY-PVT-SN"
+  }
+}
+
+# Create a Internet gateway
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.myvpc.id
+
+  tags = {
+    Name = "MY-IGW"
+  }
+}
+
+#Create route tables
+# Public Route table
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.myvpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+
+  tags = {
+    Name = "PublicRouteTable"
+  }
+}
+
+#Public Route table association
+
+resource "aws_route_table_association" "pubrtasso" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+# Create a Elastic ip address # If we Required 
+
+resource "aws_eip" "eip" {
+    domain   = "vpc"
+}
+
+# Create a NAT Gateway
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.eip.id
+  subnet_id     = aws_subnet.public.id
+
+  tags = {
+    Name = "NATGateway"
+  }
+}
+
+# create Private route table 
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.myvpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat.id
+  }
+
+  tags = {
+    Name = "PrivateRouteTable"
+  }
+}
+
+# create Private route table Association
+
+resource "aws_route_table_association" "pvtrtasso" {
+  subnet_id      = aws_subnet.private.id
+  route_table_id = aws_route_table.private.id
+}
+
+# Creat Public security group 
+
+resource "aws_security_group" "Public-SG" {
+  name        = "Public-SG"
+  description = "Allow TLS inbound traffic"
+  vpc_id      = aws_vpc.myvpc.id
+
+  ingress {
+    description      = "TLS from VPC"
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "Public-SG"
+  }
+}
+
+# Create a Private Security Group 
+# This can be  acess via public sg
+
+resource "aws_security_group" "Private-SG" {
+  name        = "Private-SG"
+  description = "Inbound from Public-SG"
+  vpc_id      = aws_vpc.myvpc.id
+
+  ingress {
+    description      = "TLS from VPC"
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    cidr_blocks      = ["10.0.0.0/16"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1" 
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "Private-SG"
+  }
+}
+
+# Create a Public Instance  and attach public security group
+
+resource "aws_instance" "public_instance" {
+  ami           = "ami-06006e8b065b5bd46" # Replace with a valid AMI ID
+  instance_type = "t2.micro"
+  subnet_id     = aws_subnet.public.id
+  security_groups = [aws_security_group.Public-SG.id]
+  key_name      = "linux" # Replace with your SSH key name
+  associate_public_ip_address = true
+
+  // Add any other configuration needed for the public instance
+  // For example, user_data, tags, etc.
+
+  # Adding user data
+
+   user_data = <<-EOF
+    #!/bin/bash
+    sudo yum update -y
+    echo "Hello from public instance!" > /home/ec2-user/welcome.txt
+    EOF
+
+  tags = {
+    Name = "PublicInstance"
+  }
+}
+
+resource "aws_instance" "private_instance" {
+  ami           = "ami-06006e8b065b5bd46" # Replace with a valid AMI ID
+  instance_type = "t2.micro"
+  subnet_id     = aws_subnet.private.id
+  security_groups = [aws_security_group.Private-SG.id]
+  key_name      = "linux" # Replace with your SSH key name
+
+  // Add any other configuration needed for the private instance
+  // For example, user_data, tags, etc.
+
+ # Adding user data
+  user_data = <<-EOF
+    #!/bin/bash
+    sudo yum update -y
+    echo "Hello from private instance!" > /home/ec2-user/welcome.txt
+    EOF
+
+  tags = {
+    Name = "PrivateInstance"
+  }
+}
